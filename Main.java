@@ -3,129 +3,81 @@ import java.io.RandomAccessFile;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class DistributedProcessSharedMemoryBossElectionSimulation {
+public class DistributedProcessMain {
 
-    // Simulation configuration constants
     public static final int NUM_PROCESSES = 3;
     public static final int REGION_SIZE = 128;
     public static final String SHARED_FILE = "heartbeat_shared.dat";
+    public static final long TIMEOUT = 20000; // 20 วินาที
 
+    // ---------- Shared State ----------
     static class SystemState {
-        static volatile int bossPid;
+        static volatile int bossPid = -1;
         static final long[] lastHeartbeat = new long[NUM_PROCESSES + 1];
         static final int[][] contactCounts = new int[NUM_PROCESSES + 1][NUM_PROCESSES + 1];
         static final boolean[] dead = new boolean[NUM_PROCESSES + 1];
-
-        static synchronized void markDead(int pid) {
-            if (!dead[pid]) {
-                dead[pid] = true;
-                System.out.println("[System] Process " + pid
-                        + " is considered dead (no heartbeat for >20s)");
-            }
-        }
-
-        static synchronized void electNewBoss() {
-            int oldBoss = bossPid;
-            int newBoss = -1;
-            int maxInteractions = -1;
-            for (int i = 1; i <= NUM_PROCESSES; i++) {
-                if (dead[i]) {
-                    continue;
-                }
-                int total = 0;
-                for (int j = 1; j <= NUM_PROCESSES; j++) {
-                    total += contactCounts[i][j];
-                }
-                if (total > maxInteractions) {
-                    maxInteractions = total;
-                    newBoss = i;
-                }
-            }
-            if (newBoss != -1 && newBoss != bossPid) {
-                bossPid = newBoss;
-                System.out.println("[System] Boss " + oldBoss
-                        + " has died. New boss elected: PID " + newBoss);
-            }
-        }
+        static final Set<Integer> membership = ConcurrentHashMap.newKeySet();
     }
-
-    public static final int DEFAULT_WORKER_ITERATIONS = 5;
 
     public static void main(String[] args) {
-        SystemState.bossPid = 1 + (int) (Math.random() * NUM_PROCESSES);
-        System.out.println("[System] Initial boss is PID " + SystemState.bossPid);
-        long now = System.currentTimeMillis();
-        for (int i = 1; i <= NUM_PROCESSES; i++) {
-            SystemState.lastHeartbeat[i] = now;
+        if (args.length < 1) {
+            System.err.println("Usage: java DistributedProcessMain <pid>");
+            System.exit(1);
         }
-
-        for (int pid = 1; pid <= NUM_PROCESSES; pid++) {
-            SimulatedProcess process = new SimulatedProcess(pid);
-            Thread t = new Thread(process, "Process-" + pid);
-            t.start();
-        }
+        int pid = Integer.parseInt(args[0]);
+        new DistributedProcess(pid).start();
     }
 
-    static class SimulatedProcess implements Runnable {
+    // ---------- DistributedProcess ----------
+    static class DistributedProcess {
         private final int pid;
+        private final MappedByteBuffer buffer;
         private static final int NUM_THREADS_PER_PROCESS = 3;
-        private final MappedByteBuffer sharedBuffer;
-        private final Set<Integer> membership;
 
-        SimulatedProcess(int pid) {
+        DistributedProcess(int pid) {
             this.pid = pid;
-            this.membership = ConcurrentHashMap.newKeySet();
             try {
-                RandomAccessFile raf = new RandomAccessFile(
-                        SHARED_FILE, "rw");
-                long size = (long) NUM_PROCESSES * REGION_SIZE;
-                if (raf.length() < size) {
-                    raf.setLength(size);
-                }
+                RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
+                long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE; // ✅ เผื่อ slot 0
+                if (raf.length() < size) raf.setLength(size);
                 FileChannel channel = raf.getChannel();
-                this.sharedBuffer = channel.map(
-                        FileChannel.MapMode.READ_WRITE, 0, size);
+                this.buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, size);
                 channel.close();
                 raf.close();
             } catch (IOException e) {
-                throw new RuntimeException("Failed to map shared heartbeat file", e);
+                throw new RuntimeException("ไม่สามารถ map shared memory ได้", e);
             }
         }
 
-        @Override
-        public void run() {
-            System.out.println("[Process " + pid + "] starting");
+        void start() {
+            System.out.println("[Process " + pid + "] started.");
 
-            Thread sender = new Thread(
-                    new HeartbeatSender(pid, sharedBuffer),
-                    "Process-" + pid + "-HeartbeatSender");
-            Thread listener = new Thread(
-                    new HeartbeatListener(pid, sharedBuffer,
-                            NUM_PROCESSES, membership),
-                    "Process-" + pid + "-HeartbeatListener");
+            int boss = readBossFromSharedMemory(buffer);
+            if (boss == -1) {
+                int chosen = new Random().nextInt(NUM_PROCESSES) + 1;
+                writeBossToSharedMemory(buffer, chosen);
+                SystemState.bossPid = chosen;
+                System.out.println("[INIT] Boss chosen randomly: PID " + chosen);
+            } else {
+                SystemState.bossPid = boss;
+                System.out.println("[Process " + pid + "] recognized Boss = PID " + boss);
+            }
+
+            Thread sender = new Thread(new HeartbeatSender(pid, buffer), "Sender-" + pid);
+            Thread listener = new Thread(new HeartbeatListener(pid, buffer), "Listener-" + pid);
+            Thread failureDetector = new Thread(new FailureDetector(pid, buffer), "FailureDetector-" + pid);
+
             sender.start();
             listener.start();
+            failureDetector.start();
 
-            Thread detector = new Thread(
-                    new FailureDetector(pid),
-                    "Process-" + pid + "-FailureDetector");
-            detector.start();
-
-            int iterations = DEFAULT_WORKER_ITERATIONS;
-            if (pid == SystemState.bossPid) {
-                iterations = Math.max(1, DEFAULT_WORKER_ITERATIONS / 2);
-            }
-            // Start worker threads to simulate computation
             List<Thread> workers = new ArrayList<>();
             for (int tid = 1; tid <= NUM_THREADS_PER_PROCESS; tid++) {
-                SimulatedThread worker = new SimulatedThread(pid, tid, iterations);
-                Thread wt = new Thread(worker,
-                        "Process-" + pid + "-Worker-" + tid);
+                SimulatedThread worker = new SimulatedThread(pid, tid);
+                Thread wt = new Thread(worker, "Worker-" + pid + "-" + tid);
                 workers.add(wt);
                 wt.start();
             }
@@ -135,58 +87,41 @@ public class DistributedProcessSharedMemoryBossElectionSimulation {
                     wt.join();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    break;
                 }
-            }
-
-            if (pid == SystemState.bossPid) {
-                System.out.println("[Process " + pid
-                        + "] finished its reduced workload and will now relinquish boss role");
-                SystemState.markDead(pid);
-                SystemState.electNewBoss();
             }
 
             sender.interrupt();
             listener.interrupt();
-            detector.interrupt();
-            try {
-                sender.join();
-                listener.join();
-                detector.join();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            System.out.println("[Process " + pid + "] terminating");
+            failureDetector.interrupt();
         }
     }
 
+    // ---------- Worker ----------
     static class SimulatedThread implements Runnable {
         private final int pid;
         private final int tid;
-        private final int iterations;
 
-        SimulatedThread(int pid, int tid, int iterations) {
+        SimulatedThread(int pid, int tid) {
             this.pid = pid;
             this.tid = tid;
-            this.iterations = iterations;
         }
 
         @Override
         public void run() {
-            for (int i = 1; i <= iterations; i++) {
-                System.out.println("Process " + pid + " - Thread " + tid
-                        + " working (iteration " + i + ")");
+            for (int i = 1; ; i++) {
+                System.out.println("[Worker | Process " + pid + " - Thread " + tid + "] working (iteration " + i + ")");
                 try {
-                    Thread.sleep((long) (Math.random() * 500));
+                    Thread.sleep((long) (500 + Math.random() * 1000));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
             }
-            System.out.println("Process " + pid + " - Thread " + tid + " finished");
+            System.out.println("[Worker | Process " + pid + " - Thread " + tid + "] finished.");
         }
     }
 
+    // ---------- Heartbeat Sender ----------
     static class HeartbeatSender implements Runnable {
         private final int pid;
         private final MappedByteBuffer buffer;
@@ -198,57 +133,43 @@ public class DistributedProcessSharedMemoryBossElectionSimulation {
 
         @Override
         public void run() {
-            final int offset = (pid - 1) * REGION_SIZE;
-            final byte[] clearBytes = new byte[REGION_SIZE];
+            int offset = pid * REGION_SIZE; // ✅ slot เริ่มที่ 1
+            byte[] clearBytes = new byte[REGION_SIZE];
+
             while (!Thread.currentThread().isInterrupted()) {
-                String message = "PID:" + pid + " alive";
-                byte[] data = message.getBytes(StandardCharsets.UTF_8);
+                String msg = "PID:" + pid + " alive " + System.currentTimeMillis();
+                byte[] data = msg.getBytes(StandardCharsets.UTF_8);
                 synchronized (buffer) {
                     buffer.position(offset);
                     buffer.put(clearBytes, 0, clearBytes.length);
                     buffer.position(offset);
                     buffer.put(data, 0, Math.min(data.length, REGION_SIZE));
                 }
-
                 SystemState.lastHeartbeat[pid] = System.currentTimeMillis();
-
-                System.out.println("Process " + pid + " wrote heartbeat: " + message);
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+                SystemState.dead[pid] = false; // ✅ update ตนเองว่าไม่ตาย
+                System.out.println("[PID " + pid + "] wrote heartbeat");
+                try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
             }
         }
     }
 
+    // ---------- Heartbeat Listener ----------
     static class HeartbeatListener implements Runnable {
         private final int pid;
         private final MappedByteBuffer buffer;
-        private final int numProcesses;
-        private final Set<Integer> membership;
 
-        HeartbeatListener(int pid, MappedByteBuffer buffer, int numProcesses,
-                Set<Integer> membership) {
+        HeartbeatListener(int pid, MappedByteBuffer buffer) {
             this.pid = pid;
             this.buffer = buffer;
-            this.numProcesses = numProcesses;
-            this.membership = membership;
         }
 
         @Override
         public void run() {
-            final byte[] readBytes = new byte[REGION_SIZE];
+            byte[] readBytes = new byte[REGION_SIZE];
             while (!Thread.currentThread().isInterrupted()) {
-                if (pid == SystemState.bossPid) {
-                    membership.clear();
-                }
-                for (int otherPid = 1; otherPid <= numProcesses; otherPid++) {
-                    if (otherPid == pid) {
-                        continue;
-                    }
-                    int offset = (otherPid - 1) * REGION_SIZE;
+                for (int otherPid = 1; otherPid <= NUM_PROCESSES; otherPid++) {
+                    if (otherPid == pid) continue;
+                    int offset = otherPid * REGION_SIZE;
                     String msg;
                     synchronized (buffer) {
                         buffer.position(offset);
@@ -257,56 +178,130 @@ public class DistributedProcessSharedMemoryBossElectionSimulation {
                     }
                     if (!msg.isEmpty()) {
                         SystemState.lastHeartbeat[otherPid] = System.currentTimeMillis();
-                        synchronized (SystemState.class) {
-                            SystemState.contactCounts[pid][otherPid]++;
-                            SystemState.contactCounts[otherPid][pid]++;
-                        }
-                        if (pid == SystemState.bossPid) {
-                            membership.add(otherPid);
-                            System.out.println("[Boss " + pid + "] read heartbeat from PID "
-                                    + otherPid + ": " + msg);
-                        }
+                        SystemState.contactCounts[pid][otherPid]++;
+                        SystemState.dead[otherPid] = false; // ✅ revive ถ้าเคยตาย
+                        System.out.println("[PID " + pid + "] saw heartbeat from " + otherPid);
                     }
                 }
-                if (pid == SystemState.bossPid) {
-                    System.out.println("[Boss " + pid + "] sees membership: " + membership);
-                }
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+                try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
             }
         }
     }
 
+    // ---------- Failure Detector ----------
     static class FailureDetector implements Runnable {
         private final int pid;
+        private final MappedByteBuffer buffer;
 
-        FailureDetector(int pid) {
+        FailureDetector(int pid, MappedByteBuffer buffer) {
             this.pid = pid;
+            this.buffer = buffer;
         }
 
         @Override
         public void run() {
             while (!Thread.currentThread().isInterrupted()) {
-                long now = System.currentTimeMillis();
-                for (int i = 1; i <= NUM_PROCESSES; i++) {
-                    if (!SystemState.dead[i] && now - SystemState.lastHeartbeat[i] > 20000) {
-                        SystemState.markDead(i);
-                        if (i == SystemState.bossPid) {
-                            SystemState.electNewBoss();
+                int currentBoss = readBossFromSharedMemory(buffer);
+                SystemState.bossPid = currentBoss;
+
+                if (currentBoss == pid) {
+                    SystemState.membership.clear();
+                    SystemState.membership.add(pid);
+
+                    System.out.println("\n[Boss " + pid + "] Checking membership...");
+                    for (int otherPid = 1; otherPid <= NUM_PROCESSES; otherPid++) {
+                        if (otherPid == pid) continue;
+                        long last = SystemState.lastHeartbeat[otherPid];
+                        long diff = System.currentTimeMillis() - last;
+                        if (last > 0 && diff <= TIMEOUT) {
+                            if (SystemState.dead[otherPid]) {
+                                System.out.println("[Boss " + pid + "] PID " + otherPid + " REVIVED (" + diff + " ms)");
+                            }
+                            SystemState.dead[otherPid] = false;
+                            SystemState.membership.add(otherPid);
+                            System.out.println("[Boss " + pid + "] PID " + otherPid + " ALIVE (" + diff + " ms)");
+                        } else if (last > 0 && diff > TIMEOUT) {
+                            if (!SystemState.dead[otherPid]) {
+                                SystemState.dead[otherPid] = true;
+                                System.out.println("[Boss " + pid + "] PID " + otherPid + " DEAD (" + diff + " ms)");
+                            } else {
+                                System.out.println("[Boss " + pid + "] PID " + otherPid + " still DEAD (" + diff + " ms)");
+                            }
                         }
                     }
+                    System.out.println("[Boss " + pid + "] Membership = " + SystemState.membership + "\n");
+
+                } else {
+                    // Non-Boss: monitor Boss โดยอ่าน timestamp สด
+                    long ts = readHeartbeatTimestamp(buffer, currentBoss);
+                    long age = (ts == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - ts);
+                    if (age > TIMEOUT) {
+                        System.out.println("[PID " + pid + "] Boss " + currentBoss + " died! Electing...");
+                        int newBoss = electNewBoss();
+                        writeBossToSharedMemory(buffer, newBoss);
+                        SystemState.bossPid = newBoss;
+                        System.out.println(" ---------------- [Election Result] New Boss = PID " + newBoss + " ---------------- ");
+                    }
                 }
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+
+                try { Thread.sleep(3000); } catch (InterruptedException e) { break; }
             }
         }
+
+        private int electNewBoss() {
+            int maxContact = -1, chosen = -1;
+            for (int i = 1; i <= NUM_PROCESSES; i++) {
+                if (SystemState.dead[i]) continue;
+                int sum = 0;
+                for (int j = 1; j <= NUM_PROCESSES; j++) {
+                    sum += SystemState.contactCounts[i][j];
+                }
+                if (sum > maxContact) {
+                    maxContact = sum;
+                    chosen = i;
+                }
+            }
+            return chosen == -1 ? 1 : chosen;
+        }
+    }
+
+    // ---------- Utility ----------
+    private static void writeBossToSharedMemory(MappedByteBuffer buffer, int bossPid) {
+        synchronized (buffer) {
+            buffer.position(0);
+            String msg = "BOSS:" + bossPid;
+            byte[] data = msg.getBytes(StandardCharsets.UTF_8);
+            buffer.put(new byte[REGION_SIZE], 0, REGION_SIZE);
+            buffer.position(0);
+            buffer.put(data, 0, Math.min(data.length, REGION_SIZE));
+        }
+    }
+
+    private static int readBossFromSharedMemory(MappedByteBuffer buffer) {
+        byte[] readBytes = new byte[REGION_SIZE];
+        synchronized (buffer) {
+            buffer.position(0);
+            buffer.get(readBytes, 0, REGION_SIZE);
+        }
+        String msg = new String(readBytes, StandardCharsets.UTF_8).trim();
+        if (msg.startsWith("BOSS:")) {
+            return Integer.parseInt(msg.split(":")[1]);
+        }
+        return -1;
+    }
+
+    // อ่าน timestamp สดจาก heartbeat slot
+    private static long readHeartbeatTimestamp(MappedByteBuffer buffer, int pid) {
+        byte[] arr = new byte[REGION_SIZE];
+        synchronized (buffer) {
+            buffer.position(pid * REGION_SIZE);
+            buffer.get(arr, 0, REGION_SIZE);
+        }
+        String s = new String(arr, StandardCharsets.UTF_8).trim();
+        int idx = s.lastIndexOf(' ');
+        if (idx > 0) {
+            try { return Long.parseLong(s.substring(idx + 1)); } catch (Exception ignore) {}
+        }
+        return 0L;
     }
 }
