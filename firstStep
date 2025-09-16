@@ -1,0 +1,72 @@
+import java.util.ArrayList;
+import java.util.List;
+
+public class DistributedProcessSimulation {
+    public static void main(String[] args) {
+        final int numProcesses = 3;
+        for (int pid = 1; pid <= numProcesses; pid++) {
+            SimulatedProcess process = new SimulatedProcess(pid);
+            Thread processThread = new Thread(process, "Process-" + pid);
+            processThread.start();
+        }
+    }
+}
+
+class SimulatedProcess implements Runnable {
+    private final int pid;
+    private static final int NUM_THREADS_PER_PROCESS = 3;
+
+    public SimulatedProcess(int pid) {
+        this.pid = pid;
+    }
+
+    @Override
+    public void run() {
+        System.out.println("[Process " + pid + "] started.");
+        List<Thread> workerThreads = new ArrayList<>();
+
+        for (int tid = 1; tid <= NUM_THREADS_PER_PROCESS; tid++) {
+            SimulatedThread worker = new SimulatedThread(pid, tid);
+            Thread thread = new Thread(worker,
+                    "Process-" + pid + "-Worker-" + tid);
+            workerThreads.add(thread);
+            thread.start();
+        }
+
+        for (Thread t : workerThreads) {
+            try {
+                t.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        System.out.println("[Process " + pid + "] finished.");
+    }
+}
+
+class SimulatedThread implements Runnable {
+    private final int pid;
+    private final int tid;
+
+    public SimulatedThread(int pid, int tid) {
+        this.pid = pid;
+        this.tid = tid;
+    }
+
+    @Override
+    public void run() {
+        for (int iteration = 1; iteration <= 5; iteration++) {
+            System.out.println("Process " + pid + " - Thread " + tid
+                    + " is running (iteration " + iteration + ")");
+            try {
+                Thread.sleep((long) (Math.random() * 500));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        System.out.println("Process " + pid + " - Thread " + tid
+                + " has finished.");
+    }
+}
