@@ -1,0 +1,257 @@
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class DistributedProcessSimulation {
+
+    public static final int NUM_PROCESSES = 3;   // จำนวน process ที่จะจำลอง
+    public static final int BASE_PORT = 9000;    // เลข port เริ่มต้นสำหรับ process
+
+    public static void main(String[] args) {
+        // สร้างและรัน process จำลองตามจำนวน NUM_PROCESSES
+        for (int pid = 1; pid <= NUM_PROCESSES; pid++) {
+            SimulatedProcess process = new SimulatedProcess(pid);
+            Thread t = new Thread(process, "Process-" + pid);
+            t.start();
+        }
+    }
+
+        // ==============================
+    // คลาส SimulatedProcess
+    // ------------------------------
+    // - แทน process 1 ตัวในระบบ
+    // - ภายในมี worker threads ทำงาน
+    // - มี heartbeat sender & listener สำหรับสื่อสารกับ process อื่นๆ
+    // - เก็บ membership (process ที่เห็นว่ามีชีวิตอยู่)
+    // ==============================
+    static class SimulatedProcess implements Runnable {
+        private final int pid; // process id
+        private static final int NUM_THREADS_PER_PROCESS = 3; // จำนวน worker thread ต่อ process
+        private final Set<Integer> membership = ConcurrentHashMap.newKeySet(); // เก็บ process ที่เห็นจาก heartbeat
+
+        SimulatedProcess(int pid) {
+            this.pid = pid;
+        }
+
+        @Override
+        public void run() {
+            System.out.println("[Process " + pid + "] starting");
+
+            // สร้าง thread สำหรับส่ง heartbeat
+            Thread sender = new Thread(
+                    new TcpHeartbeatSender(pid, NUM_PROCESSES, BASE_PORT),
+                    "Process-" + pid + "-HeartbeatSender");
+
+            // สร้าง thread สำหรับรับ heartbeat
+            Thread listener = new Thread(
+                    new TcpHeartbeatListener(pid, NUM_PROCESSES, BASE_PORT,
+                            membership),
+                    "Process-" + pid + "-HeartbeatListener");
+
+            sender.start();
+            listener.start();
+
+            // สร้าง worker threads ทำงานจำลอง
+            List<Thread> workers = new ArrayList<>();
+            for (int tid = 1; tid <= NUM_THREADS_PER_PROCESS; tid++) {
+                SimulatedThread worker = new SimulatedThread(pid, tid);
+                Thread wt = new Thread(worker,
+                        "Process-" + pid + "-Worker-" + tid);
+                workers.add(wt);
+                wt.start();
+            }
+
+            // รอให้ worker threads ทำงานเสร็จ
+            for (Thread wt : workers) {
+                try {
+                    wt.join();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            // หยุด sender และ listener เมื่อ worker เสร็จหมด
+            sender.interrupt();
+            listener.interrupt();
+            try {
+                sender.join();
+                listener.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            // แสดงผลลัพธ์สมาชิกที่เห็นจาก heartbeat
+            System.out.println("[Process " + pid + "] terminating; members seen: "
+                    + membership);
+        }
+    }
+
+  // ==============================
+    // คลาส SimulatedThread
+    // ------------------------------
+    // - จำลอง worker thread ของ process
+    // - ทำงาน 5 รอบ (loop)
+    // - แสดงข้อความว่า thread กำลังทำงาน
+    // ==============================
+    static class SimulatedThread implements Runnable {
+        private final int pid;
+        private final int tid;
+
+        SimulatedThread(int pid, int tid) {
+            this.pid = pid;
+            this.tid = tid;
+        }
+
+        @Override
+        public void run() {
+            // ทำงาน 5 รอบ
+            for (int i = 1; i <= 5; i++) {
+                System.out.println("Process " + pid + " - Thread " + tid
+                        + " working (iteration " + i + ")");
+                try {
+                    Thread.sleep((long) (Math.random() * 500)); // หน่วงเวลาแบบสุ่ม
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            System.out.println("Process " + pid + " - Thread " + tid
+                    + " finished");
+        }
+    }
+
+    // ==============================
+    // คลาส TcpHeartbeatSender
+    // ------------------------------
+    // - ทำหน้าที่ส่ง heartbeat ไปยัง process อื่นผ่าน TCP
+    // - ใช้ socket.connect() ไปยัง port ของแต่ละ process
+    // - ส่งข้อความ "PID:x alive" ทุกๆ 1 วินาที
+    // ==============================
+    static class TcpHeartbeatSender implements Runnable {
+        private final int pid;
+        private final int numProcesses;
+        private final int basePort;
+
+        TcpHeartbeatSender(int pid, int numProcesses, int basePort) {
+            this.pid = pid;
+            this.numProcesses = numProcesses;
+            this.basePort = basePort;
+        }
+
+        @Override
+        public void run() {
+            while (!Thread.currentThread().isInterrupted()) {
+                // ส่งข้อความไปยังทุก process ยกเว้นตัวเอง
+                for (int otherPid = 1; otherPid <= numProcesses; otherPid++) {
+                    if (otherPid == pid) {
+                        continue;
+                    }
+                    try (Socket socket = new Socket("localhost",
+                            basePort + otherPid);
+                         OutputStream out = socket.getOutputStream()) {
+                        String msg = "PID:" + pid + " alive";
+                        out.write(msg.getBytes(StandardCharsets.UTF_8));
+                        out.flush();
+                    } catch (IOException e) {
+                        // ถ้าเชื่อมต่อไม่ได้ก็ข้าม
+                    }
+                }
+                try {
+                    Thread.sleep(1000); // ส่งทุกๆ 1 วินาที
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+    }
+
+    // ==============================
+    // คลาส TcpHeartbeatListener
+    // ------------------------------
+    // - ทำหน้าที่รับ heartbeat ผ่าน TCP
+    // - เปิด ServerSocket รอรับการเชื่อมต่อ
+    // - อ่านข้อความจาก process อื่น
+    // - ถ้าเจอข้อความ "PID:y alive" → เพิ่ม y ลงใน membership
+    // - timeout ทุก 1 วินาทีเพื่อเช็ค interrupt
+    // ==============================
+    static class TcpHeartbeatListener implements Runnable {
+        private final int pid;
+        private final int numProcesses;
+        private final int basePort;
+        private final Set<Integer> membership;
+
+        TcpHeartbeatListener(int pid, int numProcesses, int basePort,
+                             Set<Integer> membership) {
+            this.pid = pid;
+            this.numProcesses = numProcesses;
+            this.basePort = basePort;
+            this.membership = membership;
+        }
+
+        @Override
+        public void run() {
+            try (ServerSocket server = new ServerSocket(basePort + pid)) {
+                server.setReuseAddress(true);
+                server.setSoTimeout(1000); // ตั้ง timeout ไว้ 1 วินาที เพื่อให้เช็ค interrupt ได้
+                while (!Thread.currentThread().isInterrupted()) {
+                    try {
+                        Socket client = server.accept(); // รอรับ connection
+                        try (InputStream in = client.getInputStream()) {
+                            byte[] buffer = new byte[128];
+                            int len = in.read(buffer);
+                            if (len > 0) {
+                                // แปลงข้อความ heartbeat ที่ได้รับ
+                                String msg = new String(buffer, 0, len,
+                                        StandardCharsets.UTF_8).trim();
+                                if (msg.startsWith("PID:")) {
+                                    int colon = msg.indexOf(':');
+                                    int space = msg.indexOf(' ', colon + 1);
+                                    String idStr;
+                                    if (space > colon) {
+                                        idStr = msg.substring(colon + 1, space);
+                                    } else {
+                                        idStr = msg.substring(colon + 1);
+                                    }
+                                    try {
+                                        int senderPid = Integer.parseInt(idStr);
+                                        if (senderPid != pid) {
+                                            // บันทึกว่าเห็น process นี้แล้ว
+                                            membership.add(senderPid);
+                                            System.out.println("Process " + pid
+                                                    + " received heartbeat from PID "
+                                                    + senderPid + "; members: "
+                                                    + membership);
+                                        }
+                                    } catch (NumberFormatException ignore) {
+                                        // ถ้าแปลงเลข PID ไม่ได้ก็ข้าม
+                                    }
+                                }
+                            }
+                        } finally {
+                            client.close();
+                        }
+                    } catch (SocketTimeoutException timeout) {
+                        // ถ้า timeout จะวนลูปใหม่เพื่อเช็ค interrupt
+                    } catch (IOException e) {
+                        if (Thread.currentThread().isInterrupted()) {
+                            break;
+                        }
+                        // ข้าม error อื่นๆ
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+}
