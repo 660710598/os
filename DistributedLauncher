@@ -1,0 +1,80 @@
+import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+
+public class DistributedLauncher {
+
+    public static final int REGION_SIZE = 128;
+    public static final String SHARED_FILE = "heartbeat_shared.dat";
+    public static final int NUM_PROCESSES = 3;
+
+    public static void main(String[] args) {
+        List<Process> processes = new ArrayList<>();
+
+        try {
+            for (int pid = 1; pid <= NUM_PROCESSES; pid++) {
+                File outFile = new File("p" + pid + ".log");
+
+                ProcessBuilder pb = new ProcessBuilder(
+                        "java", "-cp", ".", "DistributedProcessMain", String.valueOf(pid)
+                );
+
+                pb.redirectOutput(outFile);
+                pb.redirectError(outFile);
+
+                Process proc = pb.start();
+                processes.add(proc);
+
+                System.out.println("Launched Process " + pid + " (logs in " + outFile.getName() + ")");
+            }
+
+            // Thread monitor Boss
+            Thread monitor = new Thread(() -> {
+                while (true) {
+                    int boss = readBossFromSharedMemory();
+                    if (boss == -1) {
+                        System.out.println("[Launcher Monitor] Boss not elected yet.");
+                    } else {
+                        System.out.println("[Launcher Monitor] Current Boss = PID " + boss);
+                    }
+                    try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
+                }
+            });
+            monitor.setDaemon(true);
+            monitor.start();
+
+            // รอ process ลูกทั้งหมด
+            for (Process p : processes) {
+                p.waitFor();
+            }
+
+        } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static int readBossFromSharedMemory() {
+        try {
+            RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
+            FileChannel channel = raf.getChannel();
+            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, REGION_SIZE);
+            byte[] readBytes = new byte[REGION_SIZE];
+            buffer.position(0);
+            buffer.get(readBytes, 0, REGION_SIZE);
+            channel.close();
+            raf.close();
+            String msg = new String(readBytes, StandardCharsets.UTF_8).trim();
+            if (msg.startsWith("BOSS:")) {
+                return Integer.parseInt(msg.split(":")[1]);
+            }
+        } catch (Exception e) {
+            // ignore, return -1
+        }
+        return -1;
+    }
+}
