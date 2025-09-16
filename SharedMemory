@@ -16,11 +16,11 @@ import java.util.concurrent.ConcurrentHashMap;
 public class DistributedProcessSharedMemorySimulation {
 
     public static final int NUM_PROCESSES = 3;   // จำนวน process ที่จะจำลอง
-    public static final int REGION_SIZE = 128;   // ขนาด memory slot ต่อ process (เป็น byte)
+    public static final int REGION_SIZE = 128;   // ขนาด memory slot ต่อ process (byte)
     public static final String SHARED_FILE = "heartbeat_shared.dat"; // ไฟล์ shared memory
 
     public static void main(String[] args) {
-        // สร้าง process ตามจำนวน NUM_PROCESSES และรันพร้อมกัน
+        // สร้าง process จำลองตามจำนวน NUM_PROCESSES และรันพร้อมกัน
         for (int pid = 1; pid <= NUM_PROCESSES; pid++) {
             SimulatedProcess process = new SimulatedProcess(pid);
             Thread t = new Thread(process, "Process-" + pid);
@@ -29,10 +29,10 @@ public class DistributedProcessSharedMemorySimulation {
     }
 
     // คลาสแทน process จำลอง
-    // - มี worker threads ภายใน
+    // - ภายในมี worker threads
     // - มี thread สำหรับส่ง heartbeat
     // - มี thread สำหรับฟัง heartbeat
-    // - เก็บ membership (process อื่น ๆ ที่ยัง alive)
+    // - เก็บ membership (process อื่น ๆ ที่ alive)
     static class SimulatedProcess implements Runnable {
         private final int pid;  // รหัส process
         private static final int NUM_THREADS_PER_PROCESS = 3; // จำนวน worker thread ต่อ process
@@ -43,11 +43,11 @@ public class DistributedProcessSharedMemorySimulation {
             this.pid = pid;
             this.membership = ConcurrentHashMap.newKeySet();
             try {
-                // เปิดไฟล์ shared memory สำหรับอ่าน/เขียน
+                // เปิดไฟล์ shared memory
                 RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
                 long size = (long) NUM_PROCESSES * REGION_SIZE;
 
-                // ถ้าไฟล์เล็กเกินไป ให้ขยายขนาดไฟล์
+                // ถ้าไฟล์ยังไม่ใหญ่พอ ให้ขยายขนาด
                 if (raf.length() < size) {
                     raf.setLength(size);
                 }
@@ -64,13 +64,13 @@ public class DistributedProcessSharedMemorySimulation {
 
         @Override
         public void run() {
-            System.out.println("[Process " + pid + "] เริ่มทำงาน");
+            System.out.println("[Process " + pid + "] starting");
 
-            // สร้าง thread สำหรับส่ง heartbeat
+            // thread สำหรับส่ง heartbeat
             Thread sender = new Thread(new HeartbeatSender(pid, sharedBuffer),
                                        "Process-" + pid + "-HeartbeatSender");
 
-            // สร้าง thread สำหรับฟัง heartbeat
+            // thread สำหรับฟัง heartbeat
             Thread listener = new Thread(new HeartbeatListener(pid, sharedBuffer,
                                        NUM_PROCESSES, membership),
                                        "Process-" + pid + "-HeartbeatListener");
@@ -78,7 +78,7 @@ public class DistributedProcessSharedMemorySimulation {
             sender.start();
             listener.start();
 
-            // สร้าง worker threads ภายใน process
+            // worker threads ของ process
             List<Thread> workers = new ArrayList<>();
             for (int tid = 1; tid <= NUM_THREADS_PER_PROCESS; tid++) {
                 SimulatedThread worker = new SimulatedThread(pid, tid);
@@ -87,7 +87,7 @@ public class DistributedProcessSharedMemorySimulation {
                 wt.start();
             }
 
-            // รอ worker ทุกตัวทำงานเสร็จ
+            // รอ worker threads ทำงานเสร็จ
             for (Thread wt : workers) {
                 try {
                     wt.join();
@@ -107,14 +107,14 @@ public class DistributedProcessSharedMemorySimulation {
                 Thread.currentThread().interrupt();
             }
 
-            // แสดง membership สุดท้ายที่ process นี้เห็น
-            System.out.println("[Process " + pid + "] จบการทำงาน; สมาชิกที่เห็น: " + membership);
+            // แสดง membership สุดท้าย
+            System.out.println("[Process " + pid + "] terminating; members seen: " + membership);
         }
     }
 
-    // Worker thread จำลองการทำงานภายใน process
-    // - ทำงานวน loop 5 รอบ
-    // - แสดงข้อความว่า thread กำลังทำงาน
+    // Worker thread จำลองการทำงาน
+    // - ทำงานวน 5 รอบ
+    // - หน่วงเวลาสุ่ม เพื่อจำลองงานจริง
     static class SimulatedThread implements Runnable {
         private final int pid;
         private final int tid;
@@ -127,22 +127,20 @@ public class DistributedProcessSharedMemorySimulation {
         @Override
         public void run() {
             for (int i = 1; i <= 5; i++) {
-                System.out.println("Process " + pid + " - Thread " + tid
-                        + " กำลังทำงาน (รอบ " + i + ")");
+                System.out.println("Process " + pid + " - Thread " + tid + " working (iteration " + i + ")");
                 try {
-                    Thread.sleep((long) (Math.random() * 500)); // หน่วงเวลาแบบสุ่ม
+                    Thread.sleep((long) (Math.random() * 500));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
             }
-            System.out.println("Process " + pid + " - Thread " + tid + " เสร็จสิ้น");
+            System.out.println("Process " + pid + " - Thread " + tid + " finished");
         }
     }
 
     // คลาสสำหรับส่ง heartbeat
     // - เขียนข้อความ "PID:x alive" ลง shared memory ของตัวเองทุก 1 วินาที
-    // - ใช้ตำแหน่ง (offset) ตาม PID เพื่อไม่ให้ชนกับ process อื่น
     static class HeartbeatSender implements Runnable {
         private final int pid;
         private final MappedByteBuffer buffer;
@@ -154,8 +152,8 @@ public class DistributedProcessSharedMemorySimulation {
 
         @Override
         public void run() {
-            final int offset = (pid - 1) * REGION_SIZE; // ตำแหน่ง memory ของ process นี้
-            final byte[] clearBytes = new byte[REGION_SIZE]; // สำหรับล้างข้อมูลเก่า
+            final int offset = (pid - 1) * REGION_SIZE; // offset ของ process นี้ใน shared memory
+            final byte[] clearBytes = new byte[REGION_SIZE]; // สำหรับเคลียร์ข้อมูลเก่า
 
             while (!Thread.currentThread().isInterrupted()) {
                 String message = "PID:" + pid + " alive"; // ข้อความ heartbeat
@@ -164,13 +162,13 @@ public class DistributedProcessSharedMemorySimulation {
                 // เขียน heartbeat ลง shared memory
                 synchronized (buffer) {
                     buffer.position(offset);
-                    buffer.put(clearBytes, 0, clearBytes.length); // ล้างค่าเก่า
+                    buffer.put(clearBytes, 0, clearBytes.length);
                     buffer.position(offset);
                     buffer.put(data, 0, Math.min(data.length, REGION_SIZE));
                 }
 
-                // แสดง log การเขียน
-                System.out.println("Process " + pid + " เขียน heartbeat: " + message);
+                // log แสดงการเขียน heartbeat
+                System.out.println("Process " + pid + " wrote heartbeat: " + message);
 
                 try {
                     Thread.sleep(1000); // ส่งทุก 1 วินาที
@@ -183,9 +181,9 @@ public class DistributedProcessSharedMemorySimulation {
     }
 
     // คลาสสำหรับฟัง heartbeat
-    // - อ่านข้อมูลจาก shared memory ของ process อื่น ๆ ทุก 1 วินาที
-    // - ถ้าเจอข้อความ → แสดงว่า process นั้น alive
-    // - อัปเดต membership ให้ทันสมัย
+    // - อ่านข้อมูลจาก slot ของ process อื่น
+    // - ถ้าเจอข้อความ → process นั้น alive
+    // - อัปเดต membership
     static class HeartbeatListener implements Runnable {
         private final int pid;
         private final MappedByteBuffer buffer;
@@ -205,31 +203,29 @@ public class DistributedProcessSharedMemorySimulation {
             final byte[] readBytes = new byte[REGION_SIZE];
 
             while (!Thread.currentThread().isInterrupted()) {
-                membership.clear(); // เคลียร์รายชื่อเก่าออกก่อน
+                membership.clear(); // เคลียร์ membership เดิม
 
                 for (int otherPid = 1; otherPid <= numProcesses; otherPid++) {
-                    if (otherPid == pid) continue; // ไม่อ่านของตัวเอง
+                    if (otherPid == pid) continue; // ข้ามตัวเอง
 
                     int offset = (otherPid - 1) * REGION_SIZE;
                     String msg;
 
-                    // อ่านจาก slot ของ process อื่น
+                    // อ่าน heartbeat จาก process อื่น
                     synchronized (buffer) {
                         buffer.position(offset);
                         buffer.get(readBytes, 0, REGION_SIZE);
                         msg = new String(readBytes, StandardCharsets.UTF_8).trim();
                     }
 
-                    // ถ้ามีข้อความ แปลว่า process นั้นยัง alive
                     if (!msg.isEmpty()) {
                         membership.add(otherPid);
-                        System.out.println("Process " + pid + " อ่าน heartbeat จาก PID "
-                                + otherPid + ": " + msg);
+                        System.out.println("Process " + pid + " read heartbeat from PID " + otherPid + ": " + msg);
                     }
                 }
 
-                // แสดง membership ที่เห็นในรอบนี้
-                System.out.println("Process " + pid + " เห็นสมาชิก: " + membership);
+                // แสดง membership ล่าสุด
+                System.out.println("Process " + pid + " sees membership: " + membership);
 
                 try {
                     Thread.sleep(1000); // เช็คทุก 1 วินาที
