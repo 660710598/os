@@ -3,7 +3,10 @@ import java.io.RandomAccessFile;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class DistributedProcessMain {
@@ -133,7 +136,7 @@ public class DistributedProcessMain {
 
         @Override
         public void run() {
-            int offset = pid * REGION_SIZE; // ✅ slot เริ่มที่ 1
+            int offset = pid * REGION_SIZE;
             byte[] clearBytes = new byte[REGION_SIZE];
 
             while (!Thread.currentThread().isInterrupted()) {
@@ -177,7 +180,7 @@ public class DistributedProcessMain {
                         msg = new String(readBytes, StandardCharsets.UTF_8).trim();
                     }
                     if (!msg.isEmpty()) {
-                        long ts = parseHeartbeatTimestamp(msg); // ✅ ใช้ timestamp จริง
+                        long ts = parseHeartbeatTimestamp(msg);
                         if (ts > 0) {
                             SystemState.lastHeartbeat[otherPid] = ts;
                             SystemState.contactCounts[pid][otherPid]++;
@@ -195,6 +198,8 @@ public class DistributedProcessMain {
     static class FailureDetector implements Runnable {
         private final int pid;
         private final MappedByteBuffer buffer;
+        private final long startTime = System.currentTimeMillis();
+        private static final long GRACE_PERIOD = 10000; // ✅ 10 วินาที
 
         FailureDetector(int pid, MappedByteBuffer buffer) {
             this.pid = pid;
@@ -235,9 +240,11 @@ public class DistributedProcessMain {
                     System.out.println("[Boss " + pid + "] Membership = " + SystemState.membership + "\n");
 
                 } else {
-                    long ts = readHeartbeatTimestamp(buffer, currentBoss); // ✅ อ่าน timestamp สด
+                    long ts = readHeartbeatTimestamp(buffer, currentBoss);
                     long age = (ts == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - ts);
-                    if (age > TIMEOUT) {
+
+                    // ✅ ใช้ Grace Period ป้องกัน Boss ตายทันทีหลังสุ่มเลือก
+                    if (age > TIMEOUT && System.currentTimeMillis() - startTime > GRACE_PERIOD) {
                         System.out.println("[PID " + pid + "] Boss " + currentBoss + " died! Electing...");
                         int newBoss = electNewBoss();
                         writeBossToSharedMemory(buffer, newBoss);
