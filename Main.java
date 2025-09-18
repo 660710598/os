@@ -146,7 +146,7 @@ public class DistributedProcessMain {
                     buffer.put(data, 0, Math.min(data.length, REGION_SIZE));
                 }
                 SystemState.lastHeartbeat[pid] = System.currentTimeMillis();
-                SystemState.dead[pid] = false; // ✅ update ตนเองว่าไม่ตาย
+                SystemState.dead[pid] = false;
                 System.out.println("[PID " + pid + "] wrote heartbeat");
                 try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
             }
@@ -177,10 +177,13 @@ public class DistributedProcessMain {
                         msg = new String(readBytes, StandardCharsets.UTF_8).trim();
                     }
                     if (!msg.isEmpty()) {
-                        SystemState.lastHeartbeat[otherPid] = System.currentTimeMillis();
-                        SystemState.contactCounts[pid][otherPid]++;
-                        SystemState.dead[otherPid] = false; // ✅ revive ถ้าเคยตาย
-                        System.out.println("[PID " + pid + "] saw heartbeat from " + otherPid);
+                        long ts = parseHeartbeatTimestamp(msg); // ✅ ใช้ timestamp จริง
+                        if (ts > 0) {
+                            SystemState.lastHeartbeat[otherPid] = ts;
+                            SystemState.contactCounts[pid][otherPid]++;
+                            SystemState.dead[otherPid] = false;
+                            System.out.println("[PID " + pid + "] saw heartbeat from " + otherPid + " (ts=" + ts + ")");
+                        }
                     }
                 }
                 try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
@@ -232,8 +235,7 @@ public class DistributedProcessMain {
                     System.out.println("[Boss " + pid + "] Membership = " + SystemState.membership + "\n");
 
                 } else {
-                    // Non-Boss: monitor Boss โดยอ่าน timestamp สด
-                    long ts = readHeartbeatTimestamp(buffer, currentBoss);
+                    long ts = readHeartbeatTimestamp(buffer, currentBoss); // ✅ อ่าน timestamp สด
                     long age = (ts == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - ts);
                     if (age > TIMEOUT) {
                         System.out.println("[PID " + pid + "] Boss " + currentBoss + " died! Electing...");
@@ -290,7 +292,6 @@ public class DistributedProcessMain {
         return -1;
     }
 
-    // อ่าน timestamp สดจาก heartbeat slot
     private static long readHeartbeatTimestamp(MappedByteBuffer buffer, int pid) {
         byte[] arr = new byte[REGION_SIZE];
         synchronized (buffer) {
@@ -298,9 +299,13 @@ public class DistributedProcessMain {
             buffer.get(arr, 0, REGION_SIZE);
         }
         String s = new String(arr, StandardCharsets.UTF_8).trim();
-        int idx = s.lastIndexOf(' ');
+        return parseHeartbeatTimestamp(s);
+    }
+
+    private static long parseHeartbeatTimestamp(String msg) {
+        int idx = msg.lastIndexOf(' ');
         if (idx > 0) {
-            try { return Long.parseLong(s.substring(idx + 1)); } catch (Exception ignore) {}
+            try { return Long.parseLong(msg.substring(idx + 1)); } catch (Exception ignore) {}
         }
         return 0L;
     }
