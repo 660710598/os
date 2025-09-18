@@ -42,7 +42,7 @@ public class DistributedLauncher {
                     } else {
                         System.out.println("[Launcher Monitor] Current Boss = PID " + boss);
                     }
-                    try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
+                    try { Thread.sleep(20000); } catch (InterruptedException e) { break; }
                 }
             });
             monitor.setDaemon(true);
