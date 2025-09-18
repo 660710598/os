@@ -6,6 +6,7 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Scanner;
 
 public class DistributedLauncher {
 
@@ -17,6 +18,7 @@ public class DistributedLauncher {
         List<Process> processes = new ArrayList<>();
 
         try {
+            // 🚀 สร้าง process ลูกทั้งหมด
             for (int pid = 1; pid <= NUM_PROCESSES; pid++) {
                 File outFile = new File("p" + pid + ".log");
 
@@ -30,10 +32,11 @@ public class DistributedLauncher {
                 Process proc = pb.start();
                 processes.add(proc);
 
-                System.out.println("Launched Process " + pid + " (logs in " + outFile.getName() + ")");
+                System.out.println("Launched Process " + pid +
+                                   " (logs in " + outFile.getName() + ")");
             }
 
-            // Thread monitor Boss
+            // 🕵️‍♂️ Thread monitor boss
             Thread monitor = new Thread(() -> {
                 while (true) {
                     int boss = readBossFromSharedMemory();
@@ -42,15 +45,60 @@ public class DistributedLauncher {
                     } else {
                         System.out.println("[Launcher Monitor] Current Boss = PID " + boss);
                     }
-                    try { Thread.sleep(20000); } catch (InterruptedException e) { break; }
+                    try { Thread.sleep(10000); } catch (InterruptedException e) { break; }
                 }
             });
             monitor.setDaemon(true);
             monitor.start();
 
-            // รอ process ลูกทั้งหมด
+            // 🎮 รับ input จากผู้ใช้
+            Scanner scanner = new Scanner(System.in);
+            System.out.println("Enter to kill : killPid <pid> ");
+            System.out.println("Type 'exit' to quit the launcher.");
+            while (true) {
+                System.out.print(">> ");
+                String command = scanner.nextLine().trim();
+
+                if (command.equalsIgnoreCase("exit")) {
+                    System.out.println("Exiting... killing all processes.");
+                    for (Process p : processes) {
+                        p.destroyForcibly();
+                    }
+                    break;
+
+                } else if (command.startsWith("killPid")) {
+                    String[] parts = command.split("\\s+");
+                    if (parts.length == 2) {
+                        try {
+                            int targetPid = Integer.parseInt(parts[1]);
+                            if (targetPid >= 1 && targetPid <= processes.size()) {
+                                Process target = processes.get(targetPid - 1);
+                                if (target.isAlive()) {
+                                    target.destroyForcibly();
+                                    System.out.println("Killed process PID=" + targetPid);
+                                } else {
+                                    System.out.println("Process " + targetPid + " is not running.");
+                                }
+                            } else {
+                                System.out.println("PID out of range (1-" + processes.size() + ")");
+                            }
+                        } catch (NumberFormatException e) {
+                            System.out.println("Invalid PID format.");
+                        }
+                    } else {
+                        System.out.println("Usage: killPid <pid>");
+                    }
+
+                } else {
+                    System.out.println("Unknown command. Use: killPid <pid> or exit");
+                }
+            }
+
+            // ⏳ รอ process ลูกทั้งหมด (optional ถ้าจะ block จนกว่าจะ exit)
             for (Process p : processes) {
-                p.waitFor();
+                if (p.isAlive()) {
+                    p.waitFor();
+                }
             }
 
         } catch (IOException | InterruptedException e) {
@@ -58,6 +106,7 @@ public class DistributedLauncher {
         }
     }
 
+    // 📖 อ่าน Boss ปัจจุบันจาก shared memory
     private static int readBossFromSharedMemory() {
         try {
             RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
