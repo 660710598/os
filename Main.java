@@ -187,12 +187,21 @@ public class DistributedProcessMain {
                     if (!msg.isEmpty()) {
                         long ts = parseHeartbeatTimestamp(msg);
                         if (ts > 0) {
-                            SystemState.lastHeartbeat[otherPid] = ts;
-                            SystemState.contactCounts[pid][otherPid]++;
-                            SystemState.dead[otherPid] = false;
-                            System.out.println("[PID " + pid + "] saw heartbeat from " + otherPid + " (ts=" + ts + ")");
+                            long diff = System.currentTimeMillis() - ts;
+                            if (diff <= TIMEOUT) { // ✅ heartbeat ยัง fresh อยู่
+                                SystemState.lastHeartbeat[otherPid] = ts;
+                                SystemState.contactCounts[pid][otherPid]++;
+                                SystemState.dead[otherPid] = false;
+                                System.out.println(
+                                        "[PID " + pid + "] saw heartbeat from " + otherPid + " (ts=" + ts + ")");
+                            } else {
+                                // 🟡 heartbeat เก่าเกินไป
+                                System.out.println("[PID " + pid + "] not saw heartbeat from "
+                                        + otherPid + " (last ts=" + ts + ")");
+                            }
                         }
                     }
+
                 }
                 try {
                     Thread.sleep(1000);
@@ -209,6 +218,7 @@ public class DistributedProcessMain {
         private final MappedByteBuffer buffer;
         private final long startTime = System.currentTimeMillis();
         private static final long GRACE_PERIOD = 10000; // ✅ 10 วินาที
+        private static final long FORCE_BOSS1_PERIOD = 15000; // ✅ 15 วินาทีแรก fix Boss=1
 
         FailureDetector(int pid, MappedByteBuffer buffer) {
             this.pid = pid;
@@ -222,10 +232,11 @@ public class DistributedProcessMain {
                 SystemState.bossPid = currentBoss;
 
                 if (currentBoss == pid) {
+                    // ถ้า process นี้คือ Boss → ทำหน้าที่เช็ค membership
                     SystemState.membership.clear();
                     SystemState.membership.add(pid);
 
-                    System.out.println("\n[Boss " + pid + "] Checking membership...");
+                    System.out.println("\n[Boss " + pid + "] Checking membership.");
                     for (int otherPid = 1; otherPid <= NUM_PROCESSES; otherPid++) {
                         if (otherPid == pid)
                             continue;
@@ -254,8 +265,13 @@ public class DistributedProcessMain {
                     long ts = readHeartbeatTimestamp(buffer, currentBoss);
                     long age = (ts == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - ts);
 
-                    // ใช้ Grace Period ป้องกัน Boss ตายทันทีหลังสุ่มเลือก
-                    if (age > TIMEOUT && System.currentTimeMillis() - startTime > GRACE_PERIOD) {
+                    // ✅ บังคับ Boss=1 ช่วง 15 วินาทีแรก
+                    if (System.currentTimeMillis() - startTime < FORCE_BOSS1_PERIOD) {
+                        SystemState.bossPid = 1;
+                        writeBossToSharedMemory(buffer, 1);
+                    }
+                    // ✅ หลังจากนั้นถ้า Boss ปัจจุบันตาย → เลือกใหม่ตาม contactCounts
+                    else if (age > TIMEOUT && System.currentTimeMillis() - startTime > GRACE_PERIOD) {
                         System.out.println("[PID " + pid + "] Boss " + currentBoss + " died! Electing...");
                         int newBoss = electNewBoss();
                         writeBossToSharedMemory(buffer, newBoss);
@@ -289,6 +305,7 @@ public class DistributedProcessMain {
             }
             return chosen == -1 ? 1 : chosen;
         }
+
     }
 
     // ---------- Utility ----------
