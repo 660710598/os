@@ -45,7 +45,7 @@ public class DistributedLauncher {
                     } else {
                         System.out.println("[Launcher Monitor] Current Boss = PID " + boss);
                     }
-                    try { Thread.sleep(20000); } catch (InterruptedException e) { break; }
+                    try { Thread.sleep(10000); } catch (InterruptedException e) { break; }
                 }
             });
             monitor.setDaemon(true);
@@ -61,7 +61,7 @@ public class DistributedLauncher {
                 String command = scanner.nextLine().trim();
 
                 if (command.equalsIgnoreCase("exit")) {
-                    System.out.println("Exiting... killing all processes.");
+                    System.out.println("killing all processes.");
                     for (Process p : processes) {
                         p.destroyForcibly();
                     }
@@ -86,10 +86,7 @@ public class DistributedLauncher {
                         } catch (NumberFormatException e) {
                             System.out.println("Invalid PID format.");
                         }
-                    } else {
-                        System.out.println("Usage: killPid <pid>");
-                    }
-
+                    } 
                 } else {
                     System.out.println("Unknown command. Use: killPid <pid> or exit");
                 }
