@@ -23,7 +23,7 @@ public class DistributedLauncher {
                 File outFile = new File("p" + pid + ".log");
 
                 ProcessBuilder pb = new ProcessBuilder(
-                        "java", "-cp", ".", "DistributedProcessMain", String.valueOf(pid)
+                        "java", "-cp", "out", "DistributedProcessMain", String.valueOf(pid)
                 );
 
                 pb.redirectOutput(outFile);
@@ -45,7 +45,7 @@ public class DistributedLauncher {
                     } else {
                         System.out.println("[Launcher Monitor] Current Boss = PID " + boss);
                     }
-                    try { Thread.sleep(10000); } catch (InterruptedException e) { break; }
+                    try { Thread.sleep(20000); } catch (InterruptedException e) { break; }
                 }
             });
             monitor.setDaemon(true);
@@ -55,12 +55,13 @@ public class DistributedLauncher {
             Scanner scanner = new Scanner(System.in);
             System.out.println("Enter to kill : killPid <pid> ");
             System.out.println("Type 'exit' to quit the launcher.");
+
             while (true) {
                 System.out.print(">> ");
                 String command = scanner.nextLine().trim();
 
                 if (command.equalsIgnoreCase("exit")) {
-                    System.out.println("killing all processes.");
+                    System.out.println("Exiting... killing all processes.");
                     for (Process p : processes) {
                         p.destroyForcibly();
                     }
@@ -85,7 +86,10 @@ public class DistributedLauncher {
                         } catch (NumberFormatException e) {
                             System.out.println("Invalid PID format.");
                         }
+                    } else {
+                        System.out.println("Usage: killPid <pid>");
                     }
+
                 } else {
                     System.out.println("Unknown command. Use: killPid <pid> or exit");
                 }
@@ -97,6 +101,8 @@ public class DistributedLauncher {
                     p.waitFor();
                 }
             }
+
+            scanner.close();
 
         } catch (IOException | InterruptedException e) {
             e.printStackTrace();
