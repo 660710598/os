@@ -43,7 +43,7 @@ public class DistributedProcessMain {
             this.pid = pid;
             try {
                 RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
-                long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE; // ✅ เผื่อ slot 0
+                long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE; // เผื่อ slot 0
                 if (raf.length() < size)
                     raf.setLength(size);
                 FileChannel channel = raf.getChannel();
@@ -60,7 +60,7 @@ public class DistributedProcessMain {
 
             int boss = readBossFromSharedMemory(buffer);
             if (boss == -1) {
-                int chosen = 1; // ✅ fix bossPid = 1
+                int chosen = 1; // fix bossPid = 1
                 writeBossToSharedMemory(buffer, chosen);
                 SystemState.bossPid = chosen;
                 System.out.println("[INIT] Boss fixed to PID " + chosen);
@@ -217,8 +217,8 @@ public class DistributedProcessMain {
         private final int pid;
         private final MappedByteBuffer buffer;
         private final long startTime = System.currentTimeMillis();
-        private static final long GRACE_PERIOD = 10000; // ✅ 10 วินาที
-        private static final long FORCE_BOSS1_PERIOD = 15000; // ✅ 15 วินาทีแรก fix Boss=1
+        private static final long GRACE_PERIOD = 10000; // 10 วินาที
+        private static final long FORCE_BOSS1_PERIOD = 15000; // 15 วินาทีแรก fix Boss=1
 
         FailureDetector(int pid, MappedByteBuffer buffer) {
             this.pid = pid;
@@ -243,12 +243,10 @@ public class DistributedProcessMain {
                         long last = SystemState.lastHeartbeat[otherPid];
                         long diff = System.currentTimeMillis() - last;
                         if (last > 0 && diff <= TIMEOUT) {
-                            if (SystemState.dead[otherPid]) {
-                                System.out.println("[Boss " + pid + "] PID " + otherPid + " REVIVED (" + diff + " ms)");
-                            }
-                            SystemState.dead[otherPid] = false;
-                            SystemState.membership.add(otherPid);
-                            System.out.println("[Boss " + pid + "] PID " + otherPid + " ALIVE (" + diff + " ms)");
+                             if (!SystemState.dead[otherPid]) {  
+                                SystemState.membership.add(otherPid);
+                                System.out.println("[Boss " + pid + "] PID " + otherPid + " ALIVE (" + diff + " ms)");
+                             }
                         } else if (last > 0 && diff > TIMEOUT) {
                             if (!SystemState.dead[otherPid]) {
                                 SystemState.dead[otherPid] = true;
@@ -265,12 +263,12 @@ public class DistributedProcessMain {
                     long ts = readHeartbeatTimestamp(buffer, currentBoss);
                     long age = (ts == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - ts);
 
-                    // ✅ บังคับ Boss=1 ช่วง 15 วินาทีแรก
+                    //  บังคับ Boss=1 ช่วง 15 วินาทีแรก
                     if (System.currentTimeMillis() - startTime < FORCE_BOSS1_PERIOD) {
                         SystemState.bossPid = 1;
                         writeBossToSharedMemory(buffer, 1);
                     }
-                    // ✅ หลังจากนั้นถ้า Boss ปัจจุบันตาย → เลือกใหม่ตาม contactCounts
+                    //  หลังจากนั้นถ้า Boss ปัจจุบันตาย → เลือกใหม่ตาม contactCounts
                     else if (age > TIMEOUT && System.currentTimeMillis() - startTime > GRACE_PERIOD) {
                         System.out.println("[PID " + pid + "] Boss " + currentBoss + " died! Electing...");
                         int newBoss = electNewBoss();
