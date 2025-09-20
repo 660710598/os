@@ -1,6 +1,5 @@
-cd .\thread\src
-javac DistributedProcessMain.java DistributedLauncher.java
-java DistributedLauncher
+javac -d out DistributedLauncher.java DistributedProcessMain.java
+java -cp out DistributedLauncher
 
-killPid <Pid>
-exit //kill all Process
+taskkill /PID <PID> /F
+taskkill /IM java.exe /F   //kill all
