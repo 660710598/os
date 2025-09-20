@@ -5,7 +5,6 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -45,7 +44,8 @@ public class DistributedProcessMain {
             try {
                 RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
                 long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE; // ✅ เผื่อ slot 0
-                if (raf.length() < size) raf.setLength(size);
+                if (raf.length() < size)
+                    raf.setLength(size);
                 FileChannel channel = raf.getChannel();
                 this.buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, size);
                 channel.close();
@@ -60,10 +60,10 @@ public class DistributedProcessMain {
 
             int boss = readBossFromSharedMemory(buffer);
             if (boss == -1) {
-                int chosen = new Random().nextInt(NUM_PROCESSES) + 1;
+                int chosen = 1; // ✅ fix bossPid = 1
                 writeBossToSharedMemory(buffer, chosen);
                 SystemState.bossPid = chosen;
-                System.out.println("[INIT] Boss chosen randomly: PID " + chosen);
+                System.out.println("[INIT] Boss fixed to PID " + chosen);
             } else {
                 SystemState.bossPid = boss;
                 System.out.println("[Process " + pid + "] recognized Boss = PID " + boss);
@@ -111,7 +111,7 @@ public class DistributedProcessMain {
 
         @Override
         public void run() {
-            for (int i = 1; ; i++) {
+            for (int i = 1;; i++) {
                 System.out.println("[Worker | Process " + pid + " - Thread " + tid + "] working (iteration " + i + ")");
                 try {
                     Thread.sleep((long) (500 + Math.random() * 1000));
@@ -151,7 +151,11 @@ public class DistributedProcessMain {
                 SystemState.lastHeartbeat[pid] = System.currentTimeMillis();
                 SystemState.dead[pid] = false;
                 System.out.println("[PID " + pid + "] wrote heartbeat");
-                try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    break;
+                }
             }
         }
     }
@@ -171,7 +175,8 @@ public class DistributedProcessMain {
             byte[] readBytes = new byte[REGION_SIZE];
             while (!Thread.currentThread().isInterrupted()) {
                 for (int otherPid = 1; otherPid <= NUM_PROCESSES; otherPid++) {
-                    if (otherPid == pid) continue;
+                    if (otherPid == pid)
+                        continue;
                     int offset = otherPid * REGION_SIZE;
                     String msg;
                     synchronized (buffer) {
@@ -189,7 +194,11 @@ public class DistributedProcessMain {
                         }
                     }
                 }
-                try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    break;
+                }
             }
         }
     }
@@ -218,7 +227,8 @@ public class DistributedProcessMain {
 
                     System.out.println("\n[Boss " + pid + "] Checking membership...");
                     for (int otherPid = 1; otherPid <= NUM_PROCESSES; otherPid++) {
-                        if (otherPid == pid) continue;
+                        if (otherPid == pid)
+                            continue;
                         long last = SystemState.lastHeartbeat[otherPid];
                         long diff = System.currentTimeMillis() - last;
                         if (last > 0 && diff <= TIMEOUT) {
@@ -233,7 +243,8 @@ public class DistributedProcessMain {
                                 SystemState.dead[otherPid] = true;
                                 System.out.println("[Boss " + pid + "] PID " + otherPid + " DEAD (" + diff + " ms)");
                             } else {
-                                System.out.println("[Boss " + pid + "] PID " + otherPid + " still DEAD (" + diff + " ms)");
+                                System.out.println(
+                                        "[Boss " + pid + "] PID " + otherPid + " still DEAD (" + diff + " ms)");
                             }
                         }
                     }
@@ -243,24 +254,30 @@ public class DistributedProcessMain {
                     long ts = readHeartbeatTimestamp(buffer, currentBoss);
                     long age = (ts == 0 ? Long.MAX_VALUE : System.currentTimeMillis() - ts);
 
-                    // ✅ ใช้ Grace Period ป้องกัน Boss ตายทันทีหลังสุ่มเลือก
+                    // ใช้ Grace Period ป้องกัน Boss ตายทันทีหลังสุ่มเลือก
                     if (age > TIMEOUT && System.currentTimeMillis() - startTime > GRACE_PERIOD) {
                         System.out.println("[PID " + pid + "] Boss " + currentBoss + " died! Electing...");
                         int newBoss = electNewBoss();
                         writeBossToSharedMemory(buffer, newBoss);
                         SystemState.bossPid = newBoss;
-                        System.out.println(" ---------------- [Election Result] New Boss = PID " + newBoss + " ---------------- ");
+                        System.out.println(
+                                " ---------------- [Election Result] New Boss = PID " + newBoss + " ---------------- ");
                     }
                 }
 
-                try { Thread.sleep(3000); } catch (InterruptedException e) { break; }
+                try {
+                    Thread.sleep(3000);
+                } catch (InterruptedException e) {
+                    break;
+                }
             }
         }
 
         private int electNewBoss() {
             int maxContact = -1, chosen = -1;
             for (int i = 1; i <= NUM_PROCESSES; i++) {
-                if (SystemState.dead[i]) continue;
+                if (SystemState.dead[i])
+                    continue;
                 int sum = 0;
                 for (int j = 1; j <= NUM_PROCESSES; j++) {
                     sum += SystemState.contactCounts[i][j];
@@ -312,7 +329,10 @@ public class DistributedProcessMain {
     private static long parseHeartbeatTimestamp(String msg) {
         int idx = msg.lastIndexOf(' ');
         if (idx > 0) {
-            try { return Long.parseLong(msg.substring(idx + 1)); } catch (Exception ignore) {}
+            try {
+                return Long.parseLong(msg.substring(idx + 1));
+            } catch (Exception ignore) {
+            }
         }
         return 0L;
     }
