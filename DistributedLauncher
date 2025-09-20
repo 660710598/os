@@ -45,13 +45,14 @@ public class DistributedLauncher {
                         System.out.println("[Launcher Monitor] Current Boss = PID " + boss);
                     }
                     try {
-                        Thread.sleep(10000);
+                        Thread.sleep(15000);
                     } catch (InterruptedException e) {
                         break;
                     }
                 }
             });
             monitor.setDaemon(true);
+            try { Thread.sleep(2000); } catch (InterruptedException e) { }// รอให้มีการเลือกบอสก่อนค่อยทำงาน
             monitor.start();
 
             // 🎮 รับ input จากผู้ใช้
