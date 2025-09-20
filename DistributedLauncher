@@ -18,13 +18,12 @@ public class DistributedLauncher {
         List<Process> processes = new ArrayList<>();
 
         try {
-            // 🚀 สร้าง process ลูกทั้งหมด
+            // สร้าง process ลูกทั้งหมด
             for (int pid = 1; pid <= NUM_PROCESSES; pid++) {
                 File outFile = new File("p" + pid + ".log");
 
                 ProcessBuilder pb = new ProcessBuilder(
-                        "java", "-cp", "out", "DistributedProcessMain", String.valueOf(pid)
-                );
+                        "java", "-cp", "out", "DistributedProcessMain", String.valueOf(pid));
 
                 pb.redirectOutput(outFile);
                 pb.redirectError(outFile);
@@ -33,10 +32,10 @@ public class DistributedLauncher {
                 processes.add(proc);
 
                 System.out.println("Launched Process " + pid +
-                                   " (logs in " + outFile.getName() + ")");
+                        " (logs in " + outFile.getName() + ")");
             }
 
-            // 🕵️‍♂️ Thread monitor boss
+            // Thread monitor boss
             Thread monitor = new Thread(() -> {
                 while (true) {
                     int boss = readBossFromSharedMemory();
@@ -45,7 +44,11 @@ public class DistributedLauncher {
                     } else {
                         System.out.println("[Launcher Monitor] Current Boss = PID " + boss);
                     }
-                    try { Thread.sleep(10000); } catch (InterruptedException e) { break; }
+                    try {
+                        Thread.sleep(10000);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
                 }
             });
             monitor.setDaemon(true);
@@ -86,13 +89,13 @@ public class DistributedLauncher {
                         } catch (NumberFormatException e) {
                             System.out.println("Invalid PID format.");
                         }
-                    } 
+                    }
                 } else {
                     System.out.println("Unknown command. Use: killPid <pid> or exit");
                 }
             }
 
-            // ⏳ รอ process ลูกทั้งหมด (optional ถ้าจะ block จนกว่าจะ exit)
+            // รอ process ลูกทั้งหมด (optional ถ้าจะ block จนกว่าจะ exit)
             for (Process p : processes) {
                 if (p.isAlive()) {
                     p.waitFor();
@@ -106,7 +109,7 @@ public class DistributedLauncher {
         }
     }
 
-    // 📖 อ่าน Boss ปัจจุบันจาก shared memory
+    // อ่าน Boss ปัจจุบันจาก shared memory
     private static int readBossFromSharedMemory() {
         try {
             RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
@@ -126,4 +129,5 @@ public class DistributedLauncher {
         }
         return -1;
     }
+
 }
