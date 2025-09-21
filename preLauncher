@@ -1,0 +1,215 @@
+import java.io.File; // ใช้จัดการไฟล์ เช่น log output
+import java.io.IOException; // ใช้ดักจับ error ที่เกิดจาก I/O
+import java.io.RandomAccessFile; // ใช้เปิดไฟล์ shared memory แบบอ่าน/เขียน
+import java.nio.MappedByteBuffer; // ใช้ map ไฟล์เข้าหน่วยความจำ (memory-mapped file)
+import java.nio.channels.FileChannel; // ใช้สร้าง channel เพื่อ map ไฟล์
+import java.nio.charset.StandardCharsets; // ใช้กำหนด charset (UTF-8)
+import java.util.ArrayList; // ใช้สร้าง List เก็บ process
+import java.util.List; // interface List
+import java.util.Scanner; // ใช้รับ input จากผู้ใช้ (console)
+
+public class DistributedLauncher {
+
+    // ---------- ค่าคงที่ (Configuration) ----------
+    public static final int REGION_SIZE = 128; // ขนาดพื้นที่ต่อ process (128 byte ต่อ slot)
+    public static final String SHARED_FILE = "heartbeat_shared.dat"; // ชื่อไฟล์ shared memory
+    public static final int NUM_PROCESSES = 3; // จำนวน process ลูกที่จะถูกสร้าง
+
+    public static void main(String[] args) {
+        // เก็บ object Process ทั้งหมดไว้ใน list เพื่อนำมา kill หรือ monitor ได้
+        List<Process> processes = new ArrayList<>();
+
+        try {
+            // ============================================================
+            // (1) สร้าง process ลูกทั้งหมด NUM_PROCESSES ตัว
+            // ============================================================
+            for (int pid = 1; pid <= NUM_PROCESSES; pid++) {
+                // log ของ process นี้จะเก็บในไฟล์ pX.log เช่น p1.log, p2.log
+                File outFile = new File("p" + pid + ".log");
+
+                // สร้างคำสั่งรัน process ใหม่:
+                // java -cp out DistributedProcessMain <pid>
+                // -cp out = ใช้ classpath โฟลเดอร์ out ที่เก็บไฟล์ .class
+                ProcessBuilder pb = new ProcessBuilder(
+                        "java", "-cp", "out", "DistributedProcessMain", String.valueOf(pid));
+
+                // redirect ทั้ง stdout และ stderr ไปที่ไฟล์ log ของ process
+                pb.redirectOutput(outFile);
+                pb.redirectError(outFile);
+
+                // เริ่ม process
+                Process proc = pb.start();
+                processes.add(proc); // เก็บ process ไว้ใน list
+
+                System.out.println("Launched Process " + pid +
+                        " (logs in " + outFile.getName() + ")");
+            }
+
+            // ============================================================
+            // (2) Monitor Thread → ตรวจสอบ Boss ปัจจุบันทุก 15 วิ
+            // ============================================================
+            Thread monitor = new Thread(() -> {
+                while (true) {
+                    // อ่าน boss จาก shared memory (slot 0)
+                    int boss = readBossFromSharedMemory();
+                    if (boss == -1) {
+                        System.out.println("[Launcher Monitor] Boss not elected yet.");
+                    } else {
+                        System.out.println("[Launcher Monitor] Current Boss = PID " + boss);
+                    }
+                    try {
+                        Thread.sleep(15000); // รอ 15 วิ ค่อยตรวจสอบใหม่
+                    } catch (InterruptedException e) {
+                        break; // ถ้าโดน interrupt → หยุดทำงาน
+                    }
+                }
+            });
+            monitor.setDaemon(true); // กำหนดให้ thread นี้เป็น daemon → ปิดเองเมื่อ main ปิด
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+            }
+            // รอให้ process ลูกมีเวลาสุ่มเลือก boss ก่อน (2 วินาที)
+            monitor.start();
+
+            // ============================================================
+            // (3) รับคำสั่งจากผู้ใช้ผ่าน console
+            // ============================================================
+            Scanner scanner = new Scanner(System.in);
+            System.out.println("Enter to kill : killPid <pid> ");
+            System.out.println("Type 'exit' to quit the launcher.");
+
+            while (true) {
+                System.out.print(">> "); // prompt
+                String command = scanner.nextLine().trim(); // อ่าน command จากผู้ใช้
+
+                // ---------- คำสั่ง exit ----------
+                /*
+                 * if (command.equalsIgnoreCase("exit")) { ... }
+                 * เทียบแบบไม่สนตัวพิมพ์เล็กใหญ่ (พิมพ์ Exit หรือ EXIT ก็ได้)
+                 * for (Process p : processes) { p.destroyForcibly(); }
+                 * วนปิด ทุก process ลูกด้วย destroyForcibly() (เทียบเท่าการ kill แบบบังคับ)
+                 * ทำไมไม่ใช้ destroy()? → destroy() แค่ส่งสัญญาณสุภาพให้ปิด
+                 * แต่ไม่การันตีว่าจะหยุดทันที
+                 * break; ออกจากลูปคำสั่ง → โปรแกรมจะไปต่อส่วนปิดงาน/รอ process
+                 * จบตามที่คุณเขียนไว้หลังลูป
+                 */
+                if (command.equalsIgnoreCase("exit")) {
+                    System.out.println("killing all processes.");
+                    for (Process p : processes) {
+                        p.destroyForcibly(); // kill process ทั้งหมด
+                    }
+                    break; // ออกจาก loop
+
+                    // ---------- คำสั่ง killPid <pid> ----------
+                    /*
+                     * else if (command.startsWith("killPid")) { ... }
+                     * ตรวจหัวคำสั่งว่าเป็น killPid ไหม (กรณี killPid เฉย ๆ จะไม่ทำอะไร เพราะต้องมี
+                     * <pid> ต่อท้าย)
+                     * 
+                     * String[] parts = command.split("\\s+");
+                     * แยกคำด้วย ช่องว่าง 1 ตัวขึ้นไป (regex \\s+) → รองรับเคสมีหลายช่องว่าง เช่น
+                     * killPid 2
+                     * 
+                     * if (parts.length == 2) { ... }
+                     * ต้องมี 2 ส่วน: คำสั่ง + หมายเลข pid เท่านั้น
+                     * 
+                     * int targetPid = Integer.parseInt(parts[1]);
+                     * แปลงส่วนที่สองเป็นเลขเต็ม; ถ้าไม่ใช่เลขจะโดน NumberFormatException →
+                     * ไปเข้าบล็อก catch
+                     */
+                } else if (command.startsWith("killPid")) {
+                    String[] parts = command.split("\\s+"); // แยกคำด้วย space
+                    if (parts.length == 2) {
+                        try {
+                            int targetPid = Integer.parseInt(parts[1]); // ดึงเลข pid
+                            if (targetPid >= 1 && targetPid <= processes.size()) {
+                                Process target = processes.get(targetPid - 1);
+                                if (target.isAlive()) {
+                                    target.destroyForcibly(); // kill process ที่เลือก
+                                    System.out.println("Killed process PID=" + targetPid);
+                                } else {
+                                    System.out.println("Process " + targetPid + " is not running."); // กรณี pid
+                                                                                                     // ไม่ทำงานแล้ว
+                                }
+                            } else {
+                                System.out.println("PID out of range (1-" + processes.size() + ")"); // กรณีเขียนเลขเกิน
+                            }
+                        } catch (NumberFormatException e) {
+                            System.out.println("Invalid PID format."); // กรณี <pid> ไม่ใช่ตัวเลข
+                        }
+                    }
+
+                    // ---------- คำสั่งไม่ถูกต้อง ----------
+                } else {
+                    System.out.println("Unknown command. Use: killPid <pid> or exit");
+                }
+            }
+
+            // ============================================================
+            // (4) รอ process ลูกทั้งหมดจบ (optional)
+            // ============================================================
+            for (Process p : processes) {
+                if (p.isAlive()) {
+                    p.waitFor(); // block จน process นั้นจบการทำงาน
+                    /*
+                     * คำสั่งสำคัญ: บล็อก (block) thread ปัจจุบันจนกว่า process นั้นจะ
+                     * สิ้นสุดการทำงาน
+                     * เช่น ถ้า p เป็น java DistributedProcessMain 1 → main launcher จะรอจน process
+                     * 1 ปิดจริง ๆ
+                     * ทำให้ launcher ไม่ปิดโปรแกรมทิ้งทันที แต่รอ process ลูกทุกตัวจบก่อน
+                     */
+                }
+            }
+
+            scanner.close(); // ปิด scanner
+
+        } catch (IOException | InterruptedException e) {
+            e.printStackTrace();
+        }
+        /*
+         * } catch (IOException | InterruptedException e) { ... }
+         * บล็อก catch จับ 2 ประเภท exception:
+         * IOException → เกิดถ้ามีปัญหา I/O เช่น การเปิดไฟล์ log, หรือ mapping shared
+         * memory ล้มเหลว
+         * InterruptedException → เกิดถ้า thread ที่กำลัง waitFor() ถูก interrupt
+         * จากที่อื่น
+         * e.printStackTrace();
+         * แสดงรายละเอียด error บน console → ใช้ debug เวลาเจอปัญหา
+         */
+    }
+
+    // ============================================================
+    // Utility: อ่าน Boss ปัจจุบันจาก shared memory
+    // ============================================================
+    private static int readBossFromSharedMemory() {
+        try {
+            // เปิดไฟล์ shared memory แบบอ่าน/เขียน
+            RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
+            FileChannel channel = raf.getChannel();
+
+            // map เฉพาะ slot 0 (128 byte แรก)
+            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, REGION_SIZE);
+
+            // ดึงข้อมูลออกมาเป็น byte[]
+            byte[] readBytes = new byte[REGION_SIZE];
+            buffer.position(0);
+            buffer.get(readBytes, 0, REGION_SIZE);
+
+            // ปิด resource
+            channel.close();
+            raf.close();
+
+            // แปลง byte[] → String
+            String msg = new String(readBytes, StandardCharsets.UTF_8).trim();
+
+            // ถ้าเจอข้อความขึ้นต้นด้วย "BOSS:" → parse เป็น int
+            if (msg.startsWith("BOSS:")) {
+                return Integer.parseInt(msg.split(":")[1]);
+            }
+        } catch (Exception e) {
+            // ถ้า error → return -1 (ยังไม่มี boss)
+        }
+        return -1;
+    }
+}
