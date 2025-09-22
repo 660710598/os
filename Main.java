@@ -12,7 +12,7 @@ public class DistributedProcessMain {
 
     public static final int NUM_PROCESSES = 3;
     public static final int REGION_SIZE = 128;
-    public static final String SHARED_FILE = "heartbeat_shared.dat";
+    public static final String SHARED_FILE = "heartbeat_shared.dat"; // ไฟล์ ตัวกลาง Process ใช้รวมกัน
     public static final long TIMEOUT = 20000; // 20 วินาที
 
     // ---------- Shared State ----------
@@ -21,7 +21,7 @@ public class DistributedProcessMain {
         static final long[] lastHeartbeat = new long[NUM_PROCESSES + 1];
         static final int[][] contactCounts = new int[NUM_PROCESSES + 1][NUM_PROCESSES + 1];
         static final boolean[] dead = new boolean[NUM_PROCESSES + 1];
-        static final Set<Integer> membership = ConcurrentHashMap.newKeySet();
+        static final Set<Integer> membership = ConcurrentHashMap.newKeySet(); //thread-safe
     }
 
     public static void main(String[] args) {
@@ -30,7 +30,7 @@ public class DistributedProcessMain {
             System.exit(1);
         }
         int pid = Integer.parseInt(args[0]);
-        new DistributedProcess(pid).start();
+        new DistributedProcess(pid).start(); //สร้าง Process
     }
 
     // ---------- DistributedProcess ----------
@@ -42,12 +42,12 @@ public class DistributedProcessMain {
         DistributedProcess(int pid) {
             this.pid = pid;
             try {
-                RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
-                long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE; // เผื่อ slot 0
+                RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw"); // heartbeat_sheared.dat
+                long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE; // slot 0 Boss
                 if (raf.length() < size)
                     raf.setLength(size);
                 FileChannel channel = raf.getChannel();
-                this.buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, size);
+                this.buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, size);// ไฟล์ หน่วยความจำเดียวกัน
                 channel.close();
                 raf.close();
             } catch (IOException e) {
@@ -69,9 +69,9 @@ public class DistributedProcessMain {
                 System.out.println("[Process " + pid + "] recognized Boss = PID " + boss);
             }
 
-            Thread sender = new Thread(new HeartbeatSender(pid, buffer), "Sender-" + pid);
-            Thread listener = new Thread(new HeartbeatListener(pid, buffer), "Listener-" + pid);
-            Thread failureDetector = new Thread(new FailureDetector(pid, buffer), "FailureDetector-" + pid);
+            Thread sender = new Thread(new HeartbeatSender(pid, buffer), "Sender-" + pid);// ส่งข้อความ
+            Thread listener = new Thread(new HeartbeatListener(pid, buffer), "Listener-" + pid);// อ่าร heartbeat
+            Thread failureDetector = new Thread(new FailureDetector(pid, buffer), "FailureDetector-" + pid);//เช็ค P ไหนตาย
 
             sender.start();
             listener.start();
@@ -91,11 +91,12 @@ public class DistributedProcessMain {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
-            }
+            }//รอ worker หยุด
 
             sender.interrupt();
             listener.interrupt();
             failureDetector.interrupt();
+            //หยุด
         }
     }
 
@@ -188,14 +189,14 @@ public class DistributedProcessMain {
                         long ts = parseHeartbeatTimestamp(msg);
                         if (ts > 0) {
                             long diff = System.currentTimeMillis() - ts;
-                            if (diff <= TIMEOUT) { // ✅ heartbeat ยัง fresh อยู่
+                            if (diff <= TIMEOUT) { //  heartbeat ยัง fresh อยู่
                                 SystemState.lastHeartbeat[otherPid] = ts;
                                 SystemState.contactCounts[pid][otherPid]++;
                                 SystemState.dead[otherPid] = false;
                                 System.out.println(
                                         "[PID " + pid + "] saw heartbeat from " + otherPid + " (ts=" + ts + ")");
                             } else {
-                                // 🟡 heartbeat เก่าเกินไป
+                                //  heartbeat เก่าเกินไป
                                 System.out.println("[PID " + pid + "] not saw heartbeat from "
                                         + otherPid + " (last ts=" + ts + ")");
                             }
@@ -217,7 +218,7 @@ public class DistributedProcessMain {
         private final int pid;
         private final MappedByteBuffer buffer;
         private final long startTime = System.currentTimeMillis();
-        private static final long GRACE_PERIOD = 10000; // 10 วินาที
+        private static final long GRACE_PERIOD = 10000; // 10 วินาที ไม่ detect boss ตาย
         private static final long FORCE_BOSS1_PERIOD = 15000; // 15 วินาทีแรก fix Boss=1
 
         FailureDetector(int pid, MappedByteBuffer buffer) {
@@ -234,21 +235,21 @@ public class DistributedProcessMain {
                 if (currentBoss == pid) {
                     // ถ้า process นี้คือ Boss → ทำหน้าที่เช็ค membership
                     SystemState.membership.clear();
-                    SystemState.membership.add(pid);
+                    SystemState.membership.add(pid);// เพิ่มตัวเองลงไปก่อน
 
                     System.out.println("\n[Boss " + pid + "] Checking membership.");
                     for (int otherPid = 1; otherPid <= NUM_PROCESSES; otherPid++) {
                         if (otherPid == pid)
-                            continue;
-                        long last = SystemState.lastHeartbeat[otherPid];
-                        long diff = System.currentTimeMillis() - last;
+                            continue;// ข้ามตัวเอง
+                        long last = SystemState.lastHeartbeat[otherPid];// เวลาheartbeat ล่าสุด
+                        long diff = System.currentTimeMillis() - last;//อายุของ heartbeat
                         if (last > 0 && diff <= TIMEOUT) {
                              if (!SystemState.dead[otherPid]) {  
                                 SystemState.membership.add(otherPid);
                                 System.out.println("[Boss " + pid + "] PID " + otherPid + " ALIVE (" + diff + " ms)");
                              }
                         } else if (last > 0 && diff > TIMEOUT) {
-                            if (!SystemState.dead[otherPid]) {
+                            if (!SystemState.dead[otherPid]) { //processยังไม่ถูก mark ตาย
                                 SystemState.dead[otherPid] = true;
                                 System.out.println("[Boss " + pid + "] PID " + otherPid + " DEAD (" + diff + " ms)");
                             } else {
@@ -307,12 +308,19 @@ public class DistributedProcessMain {
     }
 
     // ---------- Utility ----------
-    private static void writeBossToSharedMemory(MappedByteBuffer buffer, int bossPid) {
+     private static void writeBossToSharedMemory(MappedByteBuffer buffer, int bossPid) {
         synchronized (buffer) {
+            // Boss จะถูกเขียนลง slot 0 เสมอ
             buffer.position(0);
+
+            // ข้อความที่ใช้เก็บ Boss เช่น "BOSS:2"
             String msg = "BOSS:" + bossPid;
             byte[] data = msg.getBytes(StandardCharsets.UTF_8);
+
+            // เคลียร์ค่าเก่าทั้ง slot (ใส่ byte[] ที่เต็มด้วยศูนย์)
             buffer.put(new byte[REGION_SIZE], 0, REGION_SIZE);
+
+            // เขียนข้อความ "BOSS:x" กลับไปใหม่
             buffer.position(0);
             buffer.put(data, 0, Math.min(data.length, REGION_SIZE));
         }
@@ -321,34 +329,51 @@ public class DistributedProcessMain {
     private static int readBossFromSharedMemory(MappedByteBuffer buffer) {
         byte[] readBytes = new byte[REGION_SIZE];
         synchronized (buffer) {
+            // อ่าน slot 0 ของ shared memory
             buffer.position(0);
             buffer.get(readBytes, 0, REGION_SIZE);
         }
+
+        // แปลง byte[] → String
         String msg = new String(readBytes, StandardCharsets.UTF_8).trim();
+
+        // ถ้าเจอข้อความขึ้นต้นด้วย "BOSS:" → ดึงเลข PID ออกมา
         if (msg.startsWith("BOSS:")) {
             return Integer.parseInt(msg.split(":")[1]);
         }
+        // ถ้าไม่มี boss → return -1
         return -1;
     }
 
     private static long readHeartbeatTimestamp(MappedByteBuffer buffer, int pid) {
         byte[] arr = new byte[REGION_SIZE];
         synchronized (buffer) {
+            // offset ของ process = pid * REGION_SIZE
             buffer.position(pid * REGION_SIZE);
             buffer.get(arr, 0, REGION_SIZE);
         }
+
+        // แปลง byte[] → String
         String s = new String(arr, StandardCharsets.UTF_8).trim();
+
+        // ดึง timestamp จากข้อความ heartbeat
         return parseHeartbeatTimestamp(s);
     }
 
     private static long parseHeartbeatTimestamp(String msg) {
+        // heartbeat format: "PID:x alive <timestamp>"
+        // → timestamp จะอยู่หลัง space ตัวสุดท้าย
         int idx = msg.lastIndexOf(' ');
+
         if (idx > 0) {
             try {
+                // substring หลัง space → แปลงเป็น long
                 return Long.parseLong(msg.substring(idx + 1));
             } catch (Exception ignore) {
+                // ถ้า parse ไม่ได้ → return 0
             }
         }
         return 0L;
     }
+
 }
