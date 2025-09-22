@@ -288,10 +288,10 @@ public class DistributedProcessMain {
                 RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
                 /*
                  * เปิดไฟล์ heartbeat_shared.dat ในโหมดอ่าน+เขียน
-                 * เพื่อให้ Java process ใช้เป็นฐาน (backing file) ของ
+                 * เพื่อให้ Java process ใช้เป็นฐาน สือกลาง(backing file) ของ
                  * shared memory ที่ process หลายตัวใช้ร่วมกัน
+                 * ทุก process ใช้ไฟล์เดียวกัน (heartbeat_shared.dat)
                  */
-                // RandomAccessFile = ปากกาที่ใช้เขียนไฟล์
 
                 long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE;
                 if (raf.length() < size)
@@ -445,7 +445,7 @@ public class DistributedProcessMain {
 
         @Override
         public void run() {
-            int offset = pid * REGION_SIZE;
+            int offset = pid * REGION_SIZE; //สูตรกำหนดตำแหน่งในไฟล์ให้ไม่ชนกัน
             byte[] clearBytes = new byte[REGION_SIZE];
             /*
              * offset = คำนวณตำแหน่งใน shared memory ที่ process นี้จะเขียนข้อมูลลงไป
@@ -525,7 +525,7 @@ public class DistributedProcessMain {
                 for (int otherPid = 1; otherPid <= NUM_PROCESSES; otherPid++) {
                     if (otherPid == pid)
                         continue;
-                    int offset = otherPid * REGION_SIZE;
+                    int offset = otherPid * REGION_SIZE; //สูตรกำหนดตำแหน่งในไฟล์ให้ไม่ชนกัน
                     String msg;
                     synchronized (buffer) {
                         buffer.position(offset);
