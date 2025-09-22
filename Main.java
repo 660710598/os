@@ -70,7 +70,7 @@ public class DistributedProcessMain {
             }
 
             Thread sender = new Thread(new HeartbeatSender(pid, buffer), "Sender-" + pid);// ส่งข้อความ
-            Thread listener = new Thread(new HeartbeatListener(pid, buffer), "Listener-" + pid);// อ่าร heartbeat
+            Thread listener = new Thread(new HeartbeatListener(pid, buffer), "Listener-" + pid);// อ่าน heartbeat
             Thread failureDetector = new Thread(new FailureDetector(pid, buffer), "FailureDetector-" + pid);//เช็ค P ไหนตาย
 
             sender.start();
@@ -115,7 +115,7 @@ public class DistributedProcessMain {
             for (int i = 1;; i++) {
                 System.out.println("[Worker | Process " + pid + " - Thread " + tid + "] working (iteration " + i + ")");
                 try {
-                    Thread.sleep((long) (500 + Math.random() * 1000));
+                    Thread.sleep((long) (500 + Math.random() * 1000)); // 0.5-1.5
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
@@ -138,7 +138,7 @@ public class DistributedProcessMain {
         @Override
         public void run() {
             int offset = pid * REGION_SIZE;
-            byte[] clearBytes = new byte[REGION_SIZE];
+            byte[] clearBytes = new byte[REGION_SIZE]; 
 
             while (!Thread.currentThread().isInterrupted()) {
                 String msg = "PID:" + pid + " alive " + System.currentTimeMillis();
@@ -165,6 +165,8 @@ public class DistributedProcessMain {
     static class HeartbeatListener implements Runnable {
         private final int pid;
         private final MappedByteBuffer buffer;
+        private static final long GRACE_PERIOD = 10000;
+        private final long startTime = System.currentTimeMillis();
 
         HeartbeatListener(int pid, MappedByteBuffer buffer) {
             this.pid = pid;
@@ -188,14 +190,14 @@ public class DistributedProcessMain {
                     if (!msg.isEmpty()) {
                         long ts = parseHeartbeatTimestamp(msg);
                         if (ts > 0) {
-                            long diff = System.currentTimeMillis() - ts;
+                            long diff = System.currentTimeMillis() - ts; //อายุของ heartbeat
                             if (diff <= TIMEOUT) { //  heartbeat ยัง fresh อยู่
                                 SystemState.lastHeartbeat[otherPid] = ts;
                                 SystemState.contactCounts[pid][otherPid]++;
                                 SystemState.dead[otherPid] = false;
                                 System.out.println(
                                         "[PID " + pid + "] saw heartbeat from " + otherPid + " (ts=" + ts + ")");
-                            } else {
+                            } else if (diff> TIMEOUT&& System.currentTimeMillis() - startTime > GRACE_PERIOD){
                                 //  heartbeat เก่าเกินไป
                                 System.out.println("[PID " + pid + "] not saw heartbeat from "
                                         + otherPid + " (last ts=" + ts + ")");
