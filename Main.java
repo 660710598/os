@@ -197,7 +197,8 @@ public class DistributedProcessMain {
                                 SystemState.dead[otherPid] = false;
                                 System.out.println(
                                         "[PID " + pid + "] saw heartbeat from " + otherPid + " (ts=" + ts + ")");
-                            } else if (diff> TIMEOUT&& System.currentTimeMillis() - startTime > GRACE_PERIOD){
+                            } else if (diff> TIMEOUT && System.currentTimeMillis() - startTime > GRACE_PERIOD){
+                                //เวลาปัจจุบันลบเวลาf() เริ่มทำงาน
                                 //  heartbeat เก่าเกินไป
                                 System.out.println("[PID " + pid + "] not saw heartbeat from "
                                         + otherPid + " (last ts=" + ts + ")");
