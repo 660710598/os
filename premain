@@ -286,12 +286,26 @@ public class DistributedProcessMain {
             this.pid = pid;
             try {
                 RandomAccessFile raf = new RandomAccessFile(SHARED_FILE, "rw");
+                /*
+                 * เปิดไฟล์ heartbeat_shared.dat ในโหมดอ่าน+เขียน
+                 * เพื่อให้ Java process ใช้เป็นฐาน (backing file) ของ
+                 * shared memory ที่ process หลายตัวใช้ร่วมกัน
+                 */
                 // RandomAccessFile = ปากกาที่ใช้เขียนไฟล์
-                long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE; // เผื่อ slot 0
+
+                long size = (long) (NUM_PROCESSES + 1) * REGION_SIZE;
                 if (raf.length() < size)
                     raf.setLength(size);
+                // ปรับขนาดไฟล์ให้พอมีที่เก็บข้อมูลของทุก process (slot 0 สำหรับ Boss, slot 1..N
+                // สำหรับ process)
+                
                 FileChannel channel = raf.getChannel(); // FileChannel = ท่อที่ต่อไปยังไฟล์
                 this.buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, size);
+                /*
+                 * raf.getChannel() → ดึง FileChannel ของไฟล์นี้ออกมา
+                 * แล้วใช้ map(...) → แม็พไฟล์เข้า หน่วยความจำ (MappedByteBuffer)
+                 * ผลคือ process หลายตัวที่เปิดไฟล์เดียวกัน ก็แชร์หน่วยความจำกันได้
+                 */
                 channel.close();
                 raf.close();
             } catch (IOException e) {
